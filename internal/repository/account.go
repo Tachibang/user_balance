@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"user_balance/internal/entity"
 )
+
+var ErrCannotCreateBill = errors.New("cannot create bill")
 
 type AccountRepo struct {
 	pg *sql.DB
@@ -21,16 +24,15 @@ func (r *AccountRepo) CreateAccount(ctx context.Context) (int, error) {
 	query := "INSERT INTO accounts (balance) VALUES ($1) RETURNING id"
 	err := r.pg.QueryRowContext(ctx, query, 0).Scan(&id)
 	if err != nil {
-		log.Printf("Ошибка при создании счета: %v\n", err)
-		return 0, errors.New("не удалось создать счет")
+		return 0, fmt.Errorf("%w: %v", ErrCannotCreateBill, err)
 	}
-	log.Printf("Счет с ID %d успешно создан\n", id)
+
 	return id, nil
 }
 
 func (r *AccountRepo) GetAccount(ctx context.Context, id int) (entity.Account, error) {
 	var account entity.Account
-	query := "SELECT * FROM accounts WHERE id = $1"
+	query := "SELECT id, balance FROM accounts WHERE id = $1"
 	err := r.pg.QueryRowContext(ctx, query, id).Scan(
 		&account.Id,
 		&account.Balance,
@@ -88,6 +90,8 @@ func (r *AccountRepo) Deposit(ctx context.Context, id, amount int) (int, int, er
 
 func (r *AccountRepo) Withdraw(ctx context.Context, id, amount int) (int, int, error) {
 	tx, err := r.pg.BeginTx(ctx, nil)
+	//nolint:errcheck
+	defer tx.Rollback()
 	if err != nil {
 		log.Printf("Ошибка при начале транзакции: %v\n", err)
 		return 0, 0, errors.New("не удалось начать транзакцию")
@@ -106,7 +110,6 @@ func (r *AccountRepo) Withdraw(ctx context.Context, id, amount int) (int, int, e
 	}
 
 	if balance < amount {
-		tx.Rollback()
 		log.Println("Ошибка: недостаточно средств")
 		return 0, 0, errors.New("недостаточно средств")
 	}

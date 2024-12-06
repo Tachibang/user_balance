@@ -16,6 +16,8 @@ type (
 	Server struct {
 		Host string `env-required:"true" yaml:"host" env:"SERVER_HOST"`
 		Port string `env-required:"true" yaml:"port" env:"SERVER_PORT"`
+
+		LogLevel string `env:"LOG_LEVEL" yaml:"log_level"`
 	}
 
 	PG struct {

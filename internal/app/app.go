@@ -10,38 +10,41 @@ import (
 	"time"
 
 	"user_balance/config"
-	"user_balance/internal/api/router"
+	router "user_balance/internal/api/v1"
 	"user_balance/internal/repository"
 	"user_balance/internal/service"
 	"user_balance/pkg/httpserver"
 
 	_ "github.com/lib/pq"
+	"github.com/sirupsen/logrus"
 )
 
+// TODO: add logger with log levels
 func Run() {
 	log.Println("Загрузка конфигурации...")
 	cfg, err := config.NewConfig(".env")
 	if err != nil {
 		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
-	log.Println("Конфигурация успешно загружена.")
+	log := configureLogger(cfg.Server.LogLevel)
+	log.Info("Конфигурация успешно загружена.")
 
 	// Формируем строку подключения к базе данных
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName,
 	)
-	log.Println("Подключение к базе данных...")
+	log.Info("Подключение к базе данных...")
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		log.Fatalf("Ошибка подключения к базе данных: %v", err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			log.Printf("Ошибка при закрытии подключения к базе данных: %v", err)
+			log.Errorf("Ошибка при закрытии подключения к базе данных: %v", err)
 		}
 	}()
-	log.Println("Подключение к базе данных успешно установлено.")
+	log.Info("Подключение к базе данных успешно установлено.")
 
 	log.Println("Применение миграций...")
 	if err := ApplyMigrations(db, "./migration"); err != nil {
@@ -51,8 +54,8 @@ func Run() {
 
 	log.Println("Инициализация компонентов приложения...")
 	repository := repository.NewRepository(db)
-	service := service.NewService(repository)
-	router := router.NewRouter(service)
+	service := service.NewService(repository, log)
+	router := router.NewV1Router(service)
 	log.Println("Компоненты приложения успешно инициализированы.")
 
 	log.Println("Запуск HTTP сервера...")
@@ -70,9 +73,9 @@ func Run() {
 
 	select {
 	case s := <-interrupt:
-		log.Printf("Получен сигнал завершения: %s", s)
+		log.Warnf("Получен сигнал завершения: %s", s)
 	case err = <-httpServer.Notify():
-		log.Printf("Ошибка HTTP сервера: %v", err)
+		log.Errorf("Ошибка HTTP сервера: %v", err)
 	}
 
 	log.Println("Завершение работы HTTP сервера...")
@@ -81,3 +84,26 @@ func Run() {
 	}
 	log.Println("Приложение завершило работу.")
 }
+
+// zap.Logger, logrus.Logger, std.Logger
+func configureLogger(logLevel string) *logrus.Logger {
+	logger := logrus.New()
+	logger.SetFormatter(&logrus.JSONFormatter{})
+	logger.SetOutput(os.Stdout)
+
+	lvl, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		logger.Fatalf("Ошибка при установке уровня логирования: %v", err)
+	}
+	logger.SetLevel(lvl)
+
+	return logger
+}
+
+/*
+DEBUG
+INFO
+WARN
+ERROR
+FATAL
+*/
