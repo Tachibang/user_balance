@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"time"
 	"user_balance/internal/entity"
 )
 
@@ -25,10 +26,15 @@ type Product interface {
 	GetProduct(ctx context.Context, id int) (entity.Product, error)
 }
 
+type Operation interface {
+	GetMonthlyOperations(ctx context.Context, startDate, endDate time.Time) ([]entity.Operation, error)
+}
+
 type Repository struct {
 	Account
 	Product
 	Reservation
+	Operation
 }
 
 func NewRepository(pg *sql.DB) *Repository {
@@ -36,5 +42,6 @@ func NewRepository(pg *sql.DB) *Repository {
 		Account:     NewAccountRepo(pg),
 		Product:     NewProductRepo(pg),
 		Reservation: NewReservationRepo(pg),
+		Operation:   NewOperationRepo(pg),
 	}
 }

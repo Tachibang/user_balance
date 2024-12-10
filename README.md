@@ -5,16 +5,16 @@
 - Docker Compose
 
 ## Установка и запуск
+1. **.env:**
+заполните файл .env
 
-1. **Сборка Docker-образа:**
-   Выполните следующую команду для создания образа приложения:
+2. **makefile:**
+   Выполните следующую команду:
 
-docker build -t user_balance .
+```
+make run
+```
 
-2. **Запуск приложения с помощью Docker Compose:**
-   Для запуска контейнеров, описанных в `docker-compose.yml`, используйте команду:
-
-docker-compose up -d
 
 ## Тестирование API
 
@@ -40,7 +40,7 @@ curl -X POST http://localhost:8080/api/products/create?name=cleaning
 curl -X GET http://localhost:8080/api/products/get?id=1
 
 # Запрос на создание резервации
-curl -X POST http://localhost:8080/api/reservations/create?account_id=1&product_id=1&order_id=1 -H "Content-Type: application/json" -d '{"account_id": 1, "product_id": 2, "order_id": 123, "amount": 100}'
+curl -X POST http://localhost:8080/api/reservations/create?account_id=1&product_id=1&order_id=1
 
 # Запрос на получение резервации
 curl -X GET http://localhost:8080/api/reservations/get?id=2

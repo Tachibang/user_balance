@@ -3,9 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"log"
+	"time"
 	"user_balance/internal/entity"
+	"user_balance/internal/repository/repoerrs"
 )
 
 type AccountRepo struct {
@@ -18,51 +18,66 @@ func NewAccountRepo(pg *sql.DB) *AccountRepo {
 
 func (r *AccountRepo) CreateAccount(ctx context.Context) (int, error) {
 	var id int
-	query := "INSERT INTO accounts (balance) VALUES ($1) RETURNING id"
-	err := r.pg.QueryRowContext(ctx, query, 0).Scan(&id)
+	query := "INSERT INTO accounts DEFAULT VALUES RETURNING id"
+	err := r.pg.QueryRowContext(ctx, query).Scan(&id)
 	if err != nil {
-		log.Printf("Ошибка при создании счета: %v\n", err)
-		return 0, errors.New("не удалось создать счет")
+		return 0, err
 	}
-	log.Printf("Счет с ID %d успешно создан\n", id)
 	return id, nil
 }
 
 func (r *AccountRepo) GetAccount(ctx context.Context, id int) (entity.Account, error) {
 	var account entity.Account
-	query := "SELECT * FROM accounts WHERE id = $1"
+	query := `
+		SELECT id, balance, created_at, updated_at, deleted_at
+		FROM accounts
+		WHERE id = $1
+	`
+
 	err := r.pg.QueryRowContext(ctx, query, id).Scan(
 		&account.Id,
 		&account.Balance,
-		&account.CreatedAt)
+		&account.CreatedAt,
+		&account.UpdatedAt,
+		&account.DeletedAt,
+	)
 	if err != nil {
-		log.Printf("Ошибка при получении счета с ID %d: %v\n", id, err)
-		return entity.Account{}, errors.New("не удалось получить счет")
+		if err == sql.ErrNoRows {
+			return entity.Account{}, sql.ErrNoRows
+		}
+		return entity.Account{}, err
 	}
-	log.Printf("Счет с ID %d успешно получен\n", id)
+
+	if account.DeletedAt != nil {
+		return entity.Account{}, repoerrs.ErrDataDeleted
+	}
+
 	return account, nil
 }
 
 func (r *AccountRepo) Deposit(ctx context.Context, id, amount int) (int, int, error) {
 	tx, err := r.pg.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("Ошибка при начале транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось начать транзакцию")
+		return 0, 0, err
 	}
 
 	queryUpdateBalance := `
 		UPDATE accounts
-		SET balance = balance + $1
+		SET balance = balance + $1, updated_at = NOW()
 		WHERE id = $2
-		RETURNING balance
+		RETURNING balance, deleted_at
 	`
 
 	var newBalance int
-	err = tx.QueryRowContext(ctx, queryUpdateBalance, amount, id).Scan(&newBalance)
+	var deletedCheck *time.Time
+	err = tx.QueryRowContext(ctx, queryUpdateBalance, amount, id).Scan(&newBalance, &deletedCheck)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при обновлении баланса счета: %v\n", err)
-		return 0, 0, errors.New("не удалось обновить баланс")
+		return 0, 0, err
+	}
+
+	if deletedCheck != nil {
+		return 0, 0, repoerrs.ErrDataDeleted
 	}
 
 	queryInsertOperation := `
@@ -72,48 +87,48 @@ func (r *AccountRepo) Deposit(ctx context.Context, id, amount int) (int, int, er
 	_, err = tx.ExecContext(ctx, queryInsertOperation, id, amount, "deposit")
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при записи операции: %v\n", err)
-		return 0, 0, errors.New("не удалось записать операцию")
+		return 0, 0, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		log.Printf("Ошибка при коммите транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось завершить транзакцию")
+		return 0, 0, err
 	}
 
-	log.Printf("Внесено %d на счет с ID %d, новый баланс: %d\n", amount, id, newBalance)
 	return id, newBalance, nil
 }
 
 func (r *AccountRepo) Withdraw(ctx context.Context, id, amount int) (int, int, error) {
 	tx, err := r.pg.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("Ошибка при начале транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось начать транзакцию")
+		return 0, 0, err
 	}
 
 	queryGetBalance := `
-	SELECT balance FROM accounts WHERE id=$1
+	SELECT balance, deleted_at FROM accounts WHERE id=$1
 	`
 
 	var balance int
-	err = tx.QueryRowContext(ctx, queryGetBalance, id).Scan(&balance)
+	var deletedAt *time.Time
+	err = tx.QueryRowContext(ctx, queryGetBalance, id).Scan(&balance, &deletedAt)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при получении баланса счета: %v\n", err)
-		return 0, 0, errors.New("не удалось получить баланс")
+		return 0, 0, err
+	}
+
+	if deletedAt != nil {
+		tx.Rollback()
+		return 0, 0, repoerrs.ErrNotEnoughBalance
 	}
 
 	if balance < amount {
 		tx.Rollback()
-		log.Println("Ошибка: недостаточно средств")
-		return 0, 0, errors.New("недостаточно средств")
+		return 0, 0, repoerrs.ErrNotEnoughBalance
 	}
 
 	queryUpdateBalance := `
 		UPDATE accounts
-		SET balance = balance - $1
+		SET balance = balance - $1, updated_at = now()
 		WHERE id = $2
 		RETURNING balance
 	`
@@ -122,54 +137,66 @@ func (r *AccountRepo) Withdraw(ctx context.Context, id, amount int) (int, int, e
 	err = tx.QueryRowContext(ctx, queryUpdateBalance, amount, id).Scan(&newBalance)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при обновлении баланса счета: %v\n", err)
-		return 0, 0, errors.New("не удалось обновить баланс")
+		return 0, 0, err
 	}
 
 	queryInsertOperation := `
 		INSERT INTO operations (account_id, amount, operation_type, created_at)
 		VALUES ($1, $2, $3, NOW())
 	`
+
 	_, err = tx.ExecContext(ctx, queryInsertOperation, id, amount, "withdraw")
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при записи операции: %v\n", err)
-		return 0, 0, errors.New("не удалось записать операцию")
+		return 0, 0, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		log.Printf("Ошибка при коммите транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось завершить транзакцию")
+		return 0, 0, err
 	}
 
-	log.Printf("Снято %d с счета с ID %d, новый баланс: %d\n", amount, id, newBalance)
 	return id, newBalance, nil
 }
 
 func (r *AccountRepo) Transfer(ctx context.Context, fromID, toID, amount int) (int, int, error) {
 	tx, err := r.pg.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("Ошибка при начале транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось начать транзакцию")
+		return 0, 0, err
 	}
 
 	queryGetBalance := `
-    SELECT balance FROM accounts WHERE id=$1
+    SELECT balance, deleted_at FROM accounts WHERE id=$1
     `
 
 	var fromBalance int
-	err = tx.QueryRowContext(ctx, queryGetBalance, fromID).Scan(&fromBalance)
+	var fromDeletedAt *time.Time
+	err = tx.QueryRowContext(ctx, queryGetBalance, fromID).Scan(&fromBalance, &fromDeletedAt)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при получении баланса с счета ID %d: %v\n", fromID, err)
-		return 0, 0, errors.New("не удалось получить баланс")
+		return 0, 0, err
+	}
+	if fromDeletedAt != nil {
+		tx.Rollback()
+		return 0, 0, repoerrs.ErrNotEnoughBalance
+	}
+
+	var toBalance int
+	var toDeletedAt *time.Time
+	err = tx.QueryRowContext(ctx, queryGetBalance, toID).Scan(&toBalance, &toDeletedAt)
+	if err != nil {
+		tx.Rollback()
+		return 0, 0, err
+	}
+
+	if toDeletedAt != nil {
+		tx.Rollback()
+		return 0, 0, repoerrs.ErrNotEnoughBalance
 	}
 
 	if fromBalance < amount {
 		tx.Rollback()
-		log.Println("Ошибка: недостаточно средств")
-		return 0, 0, errors.New("недостаточно средств")
+		return 0, 0, repoerrs.ErrNotEnoughBalance
 	}
 
 	queryUpdateFromBalance := `
@@ -183,13 +210,12 @@ func (r *AccountRepo) Transfer(ctx context.Context, fromID, toID, amount int) (i
 	err = tx.QueryRowContext(ctx, queryUpdateFromBalance, amount, fromID).Scan(&newFromBalance)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при обновлении баланса счета ID %d: %v\n", fromID, err)
-		return 0, 0, errors.New("не удалось обновить баланс источника")
+		return 0, 0, err
 	}
 
 	queryUpdateToBalance := `
     UPDATE accounts
-    SET balance = balance + $1
+    SET balance = balance + $1, updated_at = now()
     WHERE id = $2
     RETURNING balance
     `
@@ -198,38 +224,35 @@ func (r *AccountRepo) Transfer(ctx context.Context, fromID, toID, amount int) (i
 	err = tx.QueryRowContext(ctx, queryUpdateToBalance, amount, toID).Scan(&newToBalance)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при обновлении баланса счета ID %d: %v\n", toID, err)
-		return 0, 0, errors.New("не удалось обновить баланс получателя")
+		return 0, 0, err
 	}
 
 	queryInsertFromOperation := `
     INSERT INTO operations (account_id, amount, operation_type, created_at)
     VALUES ($1, $2, $3, NOW())
     `
+
 	_, err = tx.ExecContext(ctx, queryInsertFromOperation, fromID, amount, "transfer_out")
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при записи операции перевода из счета ID %d: %v\n", fromID, err)
-		return 0, 0, errors.New("не удалось записать операцию перевода из")
+		return 0, 0, err
 	}
 
 	queryInsertToOperation := `
     INSERT INTO operations (account_id, amount, operation_type, created_at)
     VALUES ($1, $2, $3, NOW())
     `
+
 	_, err = tx.ExecContext(ctx, queryInsertToOperation, toID, amount, "transfer_in")
 	if err != nil {
 		tx.Rollback()
-		log.Printf("Ошибка при записи операции перевода на счет ID %d: %v\n", toID, err)
-		return 0, 0, errors.New("не удалось записать операцию перевода на")
+		return 0, 0, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		log.Printf("Ошибка при коммите транзакции: %v\n", err)
-		return 0, 0, errors.New("не удалось завершить транзакцию")
+		return 0, 0, err
 	}
 
-	log.Printf("Переведено %d с счета ID %d на счет ID %d, новые балансы: %d и %d\n", amount, fromID, toID, newFromBalance, newToBalance)
 	return newFromBalance, newToBalance, nil
 }

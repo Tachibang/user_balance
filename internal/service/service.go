@@ -4,6 +4,8 @@ import (
 	"context"
 	"user_balance/internal/entity"
 	"user_balance/internal/repository"
+
+	"github.com/sirupsen/logrus"
 )
 
 type Account interface {
@@ -31,10 +33,10 @@ type Service struct {
 	Product     Product
 }
 
-func NewService(repository *repository.Repository) *Service {
+func NewService(repository *repository.Repository, logger *logrus.Logger) *Service {
 	return &Service{
-		Account:     NewAccountService(repository),
-		Reservation: NewReservationService(repository),
-		Product:     NewProductService(repository),
+		Account:     NewAccountService(repository, logger),
+		Reservation: NewReservationService(repository, logger),
+		Product:     NewProductService(repository, logger),
 	}
 }

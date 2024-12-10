@@ -3,59 +3,79 @@ package app
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"user_balance/config"
-	"user_balance/internal/api/router"
+	"user_balance/internal/api"
+	"user_balance/internal/api/httpserver"
 	"user_balance/internal/repository"
 	"user_balance/internal/service"
-	"user_balance/pkg/httpserver"
 
 	_ "github.com/lib/pq"
 )
 
 func Run() {
-	log.Println("Загрузка конфигурации...")
+	logger := SetLogrus("info")
+	logger.Info("Загрузка конфигурации...")
+
 	cfg, err := config.NewConfig(".env")
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+		logger.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
-	log.Println("Конфигурация успешно загружена.")
 
-	// Формируем строку подключения к базе данных
+	logger = SetLogrus(cfg.Level)
+	logger.Info("Конфигурация успешно загружена.")
+
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName,
 	)
-	log.Println("Подключение к базе данных...")
+	logger.Info("Подключение к базе данных...")
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatalf("Ошибка подключения к базе данных: %v", err)
+		logger.Fatalf("Ошибка подключения к базе данных: %v", err)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			log.Printf("Ошибка при закрытии подключения к базе данных: %v", err)
+			logger.Errorf("Ошибка при закрытии подключения к базе данных: %v", err)
 		}
 	}()
-	log.Println("Подключение к базе данных успешно установлено.")
+	logger.Info("Подключение к базе данных успешно установлено.")
 
-	log.Println("Применение миграций...")
+	logger.Info("Применение миграций...")
 	if err := ApplyMigrations(db, "./migration"); err != nil {
-		log.Fatalf("Ошибка применения миграций: %v", err)
+		logger.Fatalf("Ошибка применения миграций: %v", err)
 	}
-	log.Println("Миграции успешно применены.")
+	logger.Info("Миграции успешно применены.")
 
-	log.Println("Инициализация компонентов приложения...")
+	logger.Info("Инициализация компонентов приложения...")
 	repository := repository.NewRepository(db)
-	service := service.NewService(repository)
-	router := router.NewRouter(service)
-	log.Println("Компоненты приложения успешно инициализированы.")
+	service := service.NewService(repository, logger)
+	router := api.NewRouter(service, logger)
+	logger.Info("Компоненты приложения успешно инициализированы.")
 
-	log.Println("Запуск HTTP сервера...")
+	logger.Info("Инициализация Kafka producer...")
+	kafkaProducer, err := NewKafkaProducer(cfg.Kafka.Brokers, logger)
+	if err != nil {
+		logger.Fatalf("Ошибка инициализации Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+	logger.Info("Kafka producer успешно инициализирован.")
+
+	logger.Info("Инициализация Cron scheduler...")
+	scheduler := NewScheduler(logger)
+	job := scheduler.GenerateMonthlyReportJob(repository, kafkaProducer, cfg.Kafka.Topic)
+	if err := scheduler.AddJob(cfg.Cron.Schedule, job); err != nil {
+		logger.Fatalf("Ошибка добавления Cron задачи: %v", err)
+	}
+	scheduler.Start()
+	defer scheduler.Stop()
+	logger.Info("Cron scheduler успешно инициализирован.")
+
+	logger.Info("Запуск HTTP сервера...")
 	httpServer := httpserver.New(
 		router,
 		httpserver.Port(cfg.Server.Port),
@@ -64,20 +84,19 @@ func Run() {
 		httpserver.ShutdownTimeout(15*time.Second),
 	)
 
-	// Обработка системных сигналов
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 
 	select {
 	case s := <-interrupt:
-		log.Printf("Получен сигнал завершения: %s", s)
+		logger.Warnf("Получен сигнал завершения: %s", s)
 	case err = <-httpServer.Notify():
-		log.Printf("Ошибка HTTP сервера: %v", err)
+		logger.Errorf("Ошибка HTTP сервера: %v", err)
 	}
 
-	log.Println("Завершение работы HTTP сервера...")
+	logger.Info("Завершение работы HTTP сервера...")
 	if err := httpServer.Shutdown(); err != nil {
-		log.Printf("Ошибка при завершении работы HTTP сервера: %v", err)
+		logger.Errorf("Ошибка при завершении работы HTTP сервера: %v", err)
 	}
-	log.Println("Приложение завершило работу.")
+	logger.Info("Приложение завершило работу.")
 }

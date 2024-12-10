@@ -1,4 +1,4 @@
-package router
+package handler
 
 import (
 	"encoding/json"
@@ -7,9 +7,11 @@ import (
 	"strconv"
 	"user_balance/internal/entity"
 	"user_balance/internal/service"
+
+	"github.com/sirupsen/logrus"
 )
 
-func newReservationRoutes(mux *http.ServeMux, basePath string, reservationService service.Reservation) {
+func NewReservationRoutes(mux *http.ServeMux, basePath string, reservationService service.Reservation, logger *logrus.Logger) {
 	mux.HandleFunc(basePath+"/create", createReservationHandler(reservationService))
 	mux.HandleFunc(basePath+"/get", getReservationHandler(reservationService))
 	mux.HandleFunc(basePath+"/refund", refundReservationHandler(reservationService))

@@ -1,0 +1,17 @@
+.PHONY: run build migrate docker-up docker-build
+
+run:
+	go run cmd/main.go
+
+build:
+	go build -o user_balance cmd/main.go
+
+
+migrate:
+	go run ./migrations
+
+docker-up:
+	docker-compose up -d
+
+docker-build:
+	docker build -t user_balance .

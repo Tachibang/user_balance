@@ -1,4 +1,4 @@
-package router
+package handler
 
 import (
 	"encoding/json"
@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"strconv"
 	"user_balance/internal/service"
+
+	"github.com/sirupsen/logrus"
 )
 
-func newProductRoutes(mux *http.ServeMux, basePath string, productService service.Product) {
+func NewProductRoutes(mux *http.ServeMux, basePath string, productService service.Product, logger *logrus.Logger) {
 	mux.HandleFunc(basePath+"/create", createProductHandler(productService))
 	mux.HandleFunc(basePath+"/get", getProductHandler(productService))
 }
